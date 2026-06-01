@@ -3,9 +3,9 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from config import MOVEMENT_CSV_PATH
+from config import CSV_ENCODINGS, MOVEMENT_CSV_PATH
 
 
 @dataclass(frozen=True)
@@ -23,8 +23,8 @@ class MovementRow:
 
 class MovementDataRepository:
     """
-    Movement_Data.csv 로부터 중앙제어 lookup 용 데이터를 읽는 저장소.
-    엑셀은 사람이 관리하고, 런타임에는 CSV 를 읽는 구조를 권장합니다.
+    Movement_Data.csv 로부터 lookup 용 데이터를 읽는 저장소.
+    런타임에는 이 CSV 하나만 사용하고, Inputs / Train_Door_DB 는 참조용으로 분리 보관합니다.
     """
 
     def __init__(self, csv_path: Path = MOVEMENT_CSV_PATH) -> None:
@@ -37,6 +37,26 @@ class MovementDataRepository:
     def _clean_key(key: str) -> str:
         return key.strip().replace("\ufeff", "")
 
+    def _open_with_fallback(self):
+        last_error = None
+        for enc in CSV_ENCODINGS:
+            try:
+                f = self.csv_path.open("r", encoding=enc, newline="")
+                # 실제 디코딩 테스트
+                f.read(1024)
+                f.seek(0)
+                print(f"[DATA] CSV encoding detected: {enc}")
+                return f
+            except UnicodeDecodeError as exc:
+                last_error = exc
+                try:
+                    f.close()
+                except Exception:
+                    pass
+        if last_error:
+            raise last_error
+        raise RuntimeError("CSV 파일을 열 수 없습니다.")
+
     def load(self) -> None:
         if not self.csv_path.exists():
             raise FileNotFoundError(
@@ -47,12 +67,15 @@ class MovementDataRepository:
         self.rows.clear()
         self.index.clear()
 
-        with self.csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        with self._open_with_fallback() as f:
             reader = csv.DictReader(f)
             fieldnames = [self._clean_key(name) for name in (reader.fieldnames or [])]
             normalized_rows = []
             for raw in reader:
-                row = {self._clean_key(k): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
+                row = {
+                    self._clean_key(k): (v.strip() if isinstance(v, str) else v)
+                    for k, v in raw.items()
+                }
                 normalized_rows.append(row)
 
         required_cols = {

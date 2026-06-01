@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 from central_controller import CentralController
 from config import PLATFORM_ID, USE_MOCK_SERIAL, SERIAL_PORT, BAUDRATE
 from data_loader import MovementDataRepository
@@ -15,7 +13,9 @@ def print_help() -> None:
 -----------------
 help
 state
+reset                      -> operator/controller 상태 초기화
 reload                     -> Movement_Data.csv 다시 읽기
+seq-reset                  -> 다음 명령을 seq=0 으로 전송
 
 train GTX-A                -> AI 결과 대입
 case 3                     -> 정차 case 대입
@@ -30,7 +30,6 @@ stop                       -> active doors STOP
 stop-all                   -> 전체 STOP
 emergency on|off           -> 비상 상태 전환
 
-poll                       -> 시리얼/Mock 응답 1회 읽기
 quit
 """.strip()
     )
@@ -38,29 +37,25 @@ quit
 
 def main() -> None:
     repo = MovementDataRepository()
+    controller: CentralController
+
+    def on_serial_message(msg: dict) -> None:
+        controller.handle_feedback(msg)
 
     if USE_MOCK_SERIAL:
-        transport = MockSerialTransport()
+        transport = MockSerialTransport(on_message=on_serial_message)
     else:
-        transport = SerialTransport(SERIAL_PORT, BAUDRATE)
+        transport = SerialTransport(
+            port=SERIAL_PORT,
+            baudrate=BAUDRATE,
+            on_message=on_serial_message,
+        )
 
     controller = CentralController(
         platform_id=PLATFORM_ID,
         repo=repo,
         transport=transport,
     )
-
-    def poll_transport_once() -> None:
-        try:
-            line = transport.read_line()
-            if not line:
-                return
-            msg = json.loads(line)
-            controller.handle_feedback(msg)
-        except json.JSONDecodeError:
-            print("[WARN] 수신 데이터가 JSON 형식이 아닙니다.")
-        except Exception as exc:
-            print(f"[WARN] 수신 처리 중 오류: {exc}")
 
     transport.connect()
     print_help()
@@ -85,6 +80,9 @@ def main() -> None:
                     repo.load()
                     print("[INFO] Movement_Data.csv reloaded")
 
+                elif cmd == "seq-reset":
+                    controller.reset_seq()
+
                 elif cmd == "train" and len(parts) >= 2:
                     controller.update_train_type(" ".join(parts[1:]))
 
@@ -105,27 +103,23 @@ def main() -> None:
                 elif cmd == "close-ok" and len(parts) == 2:
                     controller.set_close_approved(parts[1].lower() == "on")
 
+                elif cmd == "reset":
+                    controller.reset_state()
+
                 elif cmd == "open":
                     controller.send_open()
-                    poll_transport_once()
 
                 elif cmd == "close":
                     controller.send_close()
-                    poll_transport_once()
 
                 elif cmd == "stop":
                     controller.send_stop(all_doors=False)
-                    poll_transport_once()
 
                 elif cmd == "stop-all":
                     controller.send_stop(all_doors=True)
-                    poll_transport_once()
 
                 elif cmd == "emergency" and len(parts) == 2:
                     controller.set_emergency(parts[1].lower() == "on")
-
-                elif cmd == "poll":
-                    poll_transport_once()
 
                 elif cmd == "quit":
                     break
