@@ -12,13 +12,11 @@ The central controller is responsible for:
 - receiving stop-position context:
   - `case`
   - `stop_error_m`
-  - `stopped`
-  - operator approval inputs
 - loading matching rows from `Movement_Data.csv`
 - deciding which door units should move
 - building JSON commands
 - sending commands to the **ESP32 Platform Hub**
-- receiving ACK and sensor/status feedback
+- receiving ACK and periodic status feedback from the Hub
 
 ## System Architecture
 
@@ -32,7 +30,7 @@ ESP32 Platform Hub
         ↓ RS-485 / UART
 Arduino Mega DCUs
         ↓
-Door Units / Sensors  
+Door Units / Sensors
 ```
 
 ## Control Flow
@@ -47,7 +45,7 @@ Door movement commands are generated
         ↓
 JSON command is sent to ESP32 Platform Hub
         ↓
-ESP32 returns ACK / sensor feedback
+ESP32 returns ACK / periodic status report
 ```
 
 ## Project Structure
@@ -65,18 +63,18 @@ central_controller/
 ```
 
 ## Communication
-The PC and ESP32 communicate using:  
+The PC and ESP32 communicate using:
 - USB Serial
 - JSON line protocol
 - UTF-8 encoding
 - one JSON object per line
+- 115200 bps
 
-## Example Command
+## PC → Hub Command JSON Example
 ```json
 {
   "platform_id": 1,
-  "seq": 12,
-  "crc": "TEMP",
+  "seq": 0,
   "doors": [
     {
       "dcu_idx": 4,
@@ -88,13 +86,36 @@ The PC and ESP32 communicate using:
 }
 ```
 
-## Example ACK
+## Hub → PC ACK JSON Example
 ```json
 {
+  "msg_type": "ack",
   "platform_id": 1,
   "result": "OK",
-  "last_seq": 12,
+  "last_seq": 0,
   "status": "OPENING"
+}
+```
+
+## Hub → PC Periodic Status JSON Example
+```json
+{
+  "msg_type": "status_report",
+  "platform_id": 1,
+  "status": "OPENED",
+  "last_seq": 0,
+  "uptime_ms": 153240,
+  "Trainposition": 3,
+  "doors_status": [
+    {
+      "dcu_idx": 4,
+      "state": "Open",
+      "dir": "Right",
+      "dist_step": 3,
+      "jammed": false,
+      "emergency": false
+    }
+  ]
 }
 ```
 
@@ -114,7 +135,7 @@ Place the runtime file here:
 Edit `config.py`:
 ```python
 USE_MOCK_SERIAL = True
-SERIAL_PORT = "COM3"
+SERIAL_PORT = "COM4"
 BAUDRATE = 115200
 ```
 - USE_MOCK_SERIAL = True → test mode without ESP32
@@ -127,14 +148,10 @@ BAUDRATE = 115200
 ```text
 train GTX-A
 case 3
-error 0.05
-stopped on
-open-ok on
 open
-state
-close-ok on
 close
-state
-emergency on
-state
+stop
+stop-all
+emergency on|off
+seq-reset
 ```

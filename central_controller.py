@@ -17,9 +17,6 @@ class OperatorState:
     train_type: Optional[str] = None
     case: Optional[int] = None
     stop_error_m: Optional[float] = None
-    stopped: bool = False
-    open_approved: bool = False
-    close_approved: bool = False
     emergency: bool = False
 
 
@@ -37,7 +34,7 @@ class CentralController:
 
         self.state = OperatorState()
 
-        # PDF 4.2: seq=0 리셋 허용 → 앱 시작 직후 첫 명령이 seq=0 이 되도록 -1에서 시작
+        # 첫 명령이 seq=0 이 되도록 시작값 -1
         self.seq = -1
 
         # 마지막 OPEN 명령 정보를 보관해 CLOSE 시 재사용
@@ -54,6 +51,13 @@ class CentralController:
         self.seq = -1
         print("[CTRL] seq reset requested. Next command will use seq=0")
 
+    def reset_state(self) -> None:
+        self.state = OperatorState()
+        self.active_commands.clear()
+        self.last_ack = None
+        self.last_status_report = None
+        print("[CTRL] controller state reset")
+
     # ---------- 입력 업데이트 ----------
     def update_train_type(self, train_type: str) -> None:
         self.state.train_type = train_type
@@ -64,18 +68,6 @@ class CentralController:
         self.state.stop_error_m = stop_error_m
         print(f"[CTRL] case={case}, stop_error_m={stop_error_m}")
 
-    def set_stopped(self, value: bool) -> None:
-        self.state.stopped = value
-        print(f"[CTRL] stopped={value}")
-
-    def set_open_approved(self, value: bool) -> None:
-        self.state.open_approved = value
-        print(f"[CTRL] open_approved={value}")
-
-    def set_close_approved(self, value: bool) -> None:
-        self.state.close_approved = value
-        print(f"[CTRL] close_approved={value}")
-
     def set_emergency(self, value: bool) -> None:
         self.state.emergency = value
         print(f"[CTRL] emergency={value}")
@@ -85,33 +77,30 @@ class CentralController:
     # ---------- 제어 조건 검사 ----------
     def can_open(self) -> bool:
         s = self.state
+
         if s.emergency:
             print("[BLOCK] emergency 상태입니다.")
             return False
+
         if not s.train_type:
             print("[BLOCK] train_type 이 없습니다.")
             return False
+
         if s.case is None or s.stop_error_m is None:
             print("[BLOCK] case / stop_error_m 이 없습니다.")
             return False
-        if not s.stopped:
-            print("[BLOCK] stopped=False 입니다.")
-            return False
-        if not s.open_approved:
-            print("[BLOCK] open_approved=False 입니다.")
-            return False
+
         return True
 
     def can_close(self) -> bool:
         if self.state.emergency:
             print("[BLOCK] emergency 상태입니다.")
             return False
-        if not self.state.close_approved:
-            print("[BLOCK] close_approved=False 입니다.")
-            return False
+
         if not self.active_commands:
             print("[BLOCK] active_commands 가 비어 있습니다.")
             return False
+
         return True
 
     # ---------- 제어 명령 ----------
@@ -154,18 +143,10 @@ class CentralController:
         else:
             print(f"[CTRL] STOP sent, target={target}")
 
-    def reset_state(self) -> None:
-        self.state = OperatorState()
-        self.active_commands.clear()
-        self.last_ack = None
-        self.last_status_report = None
-        print("[CTRL] operator/controller state reset")
-
     # ---------- ESP32 피드백 처리 ----------
     def handle_feedback(self, msg: Dict[str, Any]) -> None:
         msg_type = msg.get("msg_type")
 
-        # ACK JSON (PDF 4.3)
         if msg_type == "ack":
             if msg.get("platform_id") != self.platform_id:
                 print(f"[WARN] ACK platform_id mismatch: {msg}")
@@ -174,7 +155,6 @@ class CentralController:
             print(f"[ACK] {msg}")
             return
 
-        # Periodic Status JSON (PDF 4.4)
         if msg_type == "status_report":
             if msg.get("platform_id") != self.platform_id:
                 print(f"[WARN] STATUS platform_id mismatch: {msg}")
@@ -183,7 +163,7 @@ class CentralController:
             print(f"[STATUS_REPORT] {msg}")
             return
 
-        # 하위 호환 (과거 형식)
+        # 하위 호환
         if "result" in msg:
             self.last_ack = msg
             print(f"[ACK-LEGACY] {msg}")

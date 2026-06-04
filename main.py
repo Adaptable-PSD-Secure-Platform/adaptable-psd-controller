@@ -13,16 +13,13 @@ def print_help() -> None:
 -----------------
 help
 state
-reset                      -> operator/controller 상태 초기화
 reload                     -> Movement_Data.csv 다시 읽기
+reset                      -> controller 상태 초기화
 seq-reset                  -> 다음 명령을 seq=0 으로 전송
 
 train GTX-A                -> AI 결과 대입
 case 3                     -> 정차 case 대입
 error 0.05                 -> stop_error_m 대입
-stopped on|off             -> 정차 완료 입력
-open-ok on|off             -> 개방 승인
-close-ok on|off            -> 닫힘 승인
 
 open                       -> OPEN JSON 전송
 close                      -> CLOSE JSON 전송
@@ -80,6 +77,9 @@ def main() -> None:
                     repo.load()
                     print("[INFO] Movement_Data.csv reloaded")
 
+                elif cmd == "reset":
+                    controller.reset_state()
+
                 elif cmd == "seq-reset":
                     controller.reset_seq()
 
@@ -93,18 +93,6 @@ def main() -> None:
                 elif cmd == "error" and len(parts) == 2:
                     current_case = controller.state.case or 1
                     controller.update_stop_context(current_case, float(parts[1]))
-
-                elif cmd == "stopped" and len(parts) == 2:
-                    controller.set_stopped(parts[1].lower() == "on")
-
-                elif cmd == "open-ok" and len(parts) == 2:
-                    controller.set_open_approved(parts[1].lower() == "on")
-
-                elif cmd == "close-ok" and len(parts) == 2:
-                    controller.set_close_approved(parts[1].lower() == "on")
-
-                elif cmd == "reset":
-                    controller.reset_state()
 
                 elif cmd == "open":
                     controller.send_open()

@@ -3,7 +3,7 @@ from pathlib import Path
 # -----------------------------
 # Runtime / transport settings
 # -----------------------------
-USE_MOCK_SERIAL = False       # True: ESP32 없이 Mock 테스트, False: 실제 ESP32 시리얼 연결
+USE_MOCK_SERIAL = True       # True: ESP32 없이 Mock 테스트, False: 실제 ESP32 시리얼 연결
 SERIAL_PORT = "COM4"         # Windows 예시. Linux/macOS는 /dev/ttyUSB0 등으로 변경
 BAUDRATE = 115200            # PDF 규격: PC ↔ Hub USB Serial 115200 bps
 SERIAL_TIMEOUT_SEC = 0.2
