@@ -8,10 +8,11 @@ This controller receives train type and stop-position context, looks up precompu
 
 The central controller is responsible for:
 
-- receiving the detected **train type**
-- receiving stop-position context:
+- receiving the detected **train type** from the AI module
+- receiving stop-position context from the Hub/DCU status JSON:
   - `case`
   - `stop_error_m`
+- allowing manual fallback input when automatic input is unavailable
 - loading matching rows from `Movement_Data.csv`
 - deciding which door units should move
 - building JSON commands
@@ -22,8 +23,9 @@ The central controller is responsible for:
 
 ```text
 PC
-├─ AI Module (Python)
+├─ AI Module (Python, YOLO)
 ├─ Central Controller (Python)
+├─ ai_result.json
 └─ Movement_Data.csv
         ↓ JSON over Serial
 ESP32 Platform Hub
@@ -35,11 +37,17 @@ Door Units / Sensors
 
 ## Control Flow
 ```text
-AI detects train type
+YOLO model detects train type
         ↓
-Stop-position sensor determines case / stop error
+model.py saves ai_result.json
         ↓
-Central Controller looks up Movement_Data.csv
+main.py loads train_type automatically
+        ↓
+Hub/DCU sends case by status_report JSON
+        ↓
+Central Controller updates case automatically
+        ↓
+Movement_Data.csv is queried
         ↓
 Door movement commands are generated
         ↓
@@ -52,12 +60,15 @@ ESP32 returns ACK / periodic status report
 ```text
 central_controller/
 ├─ main.py
+├─ model.py
 ├─ central_controller.py
 ├─ command_builder.py
 ├─ data_loader.py
 ├─ transport_serial.py
 ├─ config.py
 ├─ requirements.txt
+├─ best.pt
+├─ ai_result.json
 └─ data/
    └─ Movement_Data.csv
 ```
@@ -102,20 +113,18 @@ The PC and ESP32 communicate using:
 {
   "msg_type": "status_report",
   "platform_id": 1,
-  "status": "OPENED",
-  "last_seq": 0,
-  "uptime_ms": 153240,
-  "Trainposition": 3,
-  "doors_status": [
-    {
-      "dcu_idx": 4,
-      "state": "Open",
-      "dir": "Right",
-      "dist_step": 3,
-      "jammed": false,
-      "emergency": false
-    }
-  ]
+  "case": 3
+}
+```
+
+## AI Result File Example
+model.py saves the final train-type decision to ai_result.json.
+```json
+{
+  "train_type": "지하철",
+  "frame": 334,
+  "elapsed_sec": 27.2,
+  "locked": true
 }
 ```
 
@@ -141,17 +150,22 @@ BAUDRATE = 115200
 - USE_MOCK_SERIAL = True → test mode without ESP32
 - USE_MOCK_SERIAL = False → real serial communication with ESP32
 
-### 4. Run
+### 4. Run AI detection
+`python model.py`
+
+### 5. Run central controller
 `python main.py`
 
 ## CLI Example
 ```text
 train GTX-A
 case 3
+error 0.00
 open
 close
 stop
 stop-all
-emergency on|off
+emergency on
+reset
 seq-reset
 ```

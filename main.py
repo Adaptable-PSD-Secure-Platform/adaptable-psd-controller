@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from central_controller import CentralController
 from config import PLATFORM_ID, USE_MOCK_SERIAL, SERIAL_PORT, BAUDRATE
 from data_loader import MovementDataRepository
 from transport_serial import SerialTransport, MockSerialTransport
+
+
+AI_RESULT_PATH = Path("ai_result.json")
 
 
 def print_help() -> None:
@@ -17,9 +23,9 @@ reload                     -> Movement_Data.csv 다시 읽기
 reset                      -> controller 상태 초기화
 seq-reset                  -> 다음 명령을 seq=0 으로 전송
 
-train GTX-A                -> AI 결과 대입
-case 3                     -> 정차 case 대입
-error 0.05                 -> stop_error_m 대입
+train GTX-A                -> AI 결과 수동 입력
+case 3                     -> 정차 case 수동 입력
+error 0.05                 -> stop_error_m 수동 입력
 
 open                       -> OPEN JSON 전송
 close                      -> CLOSE JSON 전송
@@ -30,6 +36,26 @@ emergency on|off           -> 비상 상태 전환
 quit
 """.strip()
     )
+
+
+def load_ai_result() -> str | None:
+    """
+    model.py 가 저장한 ai_result.json 을 읽어 train_type 을 반환합니다.
+    없거나 형식이 이상하면 None 반환.
+    """
+    if not AI_RESULT_PATH.exists():
+        return None
+
+    try:
+        data = json.loads(AI_RESULT_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    train_type = data.get("train_type")
+    if not train_type:
+        return None
+
+    return str(train_type)
 
 
 def main() -> None:
@@ -59,6 +85,12 @@ def main() -> None:
 
     try:
         while True:
+            # AI 결과 자동 반영
+            detected_train = load_ai_result()
+            if detected_train:
+                if controller.state.train_type != detected_train:
+                    controller.update_train_type(detected_train)
+
             raw = input("ccu> ").strip()
             if not raw:
                 continue
@@ -83,6 +115,7 @@ def main() -> None:
                 elif cmd == "seq-reset":
                     controller.reset_seq()
 
+                # 수동 입력도 남겨둠 (AI/센서 미연동 시 백업용)
                 elif cmd == "train" and len(parts) >= 2:
                     controller.update_train_type(" ".join(parts[1:]))
 

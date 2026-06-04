@@ -9,3 +9,6 @@ venv/
 
 .idea/
 .vscode/
+
+ai_result.json
+*.pt

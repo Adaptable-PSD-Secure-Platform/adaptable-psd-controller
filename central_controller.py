@@ -68,6 +68,24 @@ class CentralController:
         self.state.stop_error_m = stop_error_m
         print(f"[CTRL] case={case}, stop_error_m={stop_error_m}")
 
+    def update_case_from_hub(self, case_value) -> None:
+        """
+        Hub/DCU가 보낸 case 값을 받아서 중앙제어부 상태에 반영.
+        stop_error_m 은 일단 0.0 고정.
+        """
+        if case_value in (None, "", "None"):
+            return
+
+        if isinstance(case_value, str):
+            if not case_value.isdigit():
+                print(f"[CTRL] unsupported case value from hub: {case_value}")
+                return
+            case_value = int(case_value)
+
+        self.state.case = int(case_value)
+        self.state.stop_error_m = 0.0
+        print(f"[CTRL] auto-updated from hub: case={self.state.case}, stop_error_m=0.0")
+
     def set_emergency(self, value: bool) -> None:
         self.state.emergency = value
         print(f"[CTRL] emergency={value}")
@@ -159,8 +177,13 @@ class CentralController:
             if msg.get("platform_id") != self.platform_id:
                 print(f"[WARN] STATUS platform_id mismatch: {msg}")
                 return
+
             self.last_status_report = msg
             print(f"[STATUS_REPORT] {msg}")
+
+            # case 자동 반영
+            case_value = msg.get("case", msg.get("Trainposition"))
+            self.update_case_from_hub(case_value)
             return
 
         # 하위 호환
@@ -172,6 +195,9 @@ class CentralController:
         if "doors_status" in msg and "status" in msg:
             self.last_status_report = msg
             print(f"[STATUS_REPORT-LEGACY] {msg}")
+
+            case_value = msg.get("case", msg.get("Trainposition"))
+            self.update_case_from_hub(case_value)
             return
 
         print(f"[UNKNOWN FEEDBACK] {msg}")
