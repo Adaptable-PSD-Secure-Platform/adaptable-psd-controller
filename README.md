@@ -1,6 +1,6 @@
-# FUSD Central Controller
+# Adaptable PSD Central Controller
 
-PC-based central controller for the FUSD (Flexible Unit-Type Screen Door) project.
+PC-based central controller for the Adaptable PSD (Adaptable Platform Screen Door) project.
 
 This controller receives train type and stop-position context, looks up precomputed movement data, builds door control commands, and sends them to the ESP32 Platform Hub using **JSON over Serial**.
 
