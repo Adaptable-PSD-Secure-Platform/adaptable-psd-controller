@@ -35,7 +35,7 @@ class AUSDLookupRow:
 class AUSDLookupRepository:
     """
     AUSD_Lookup_135_final.csv를 읽는 저장소.
-    AUSD 원본의 mm 단위와 1-based Unit ID를 런타임 형식으로 변환합니다.
+    AUSD 원본의 mm 단위를 런타임 형식으로 변환하고 Unit ID는 그대로 보존합니다.
     """
 
     def __init__(self, csv_path: Path = AUSD_LOOKUP_CSV_PATH) -> None:

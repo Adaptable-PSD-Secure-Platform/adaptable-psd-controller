@@ -1,62 +1,11 @@
 # Adaptable PSD Central Controller
 
-PC-based central controller for the Adaptable PSD (Adaptable Platform Screen Door) project.
-
-This controller receives train type and stop-position context, looks up precomputed movement data, builds door control commands, and sends them to the ESP32 Platform Hub using **JSON over Serial**.
-
-## Overview
-
-The central controller is responsible for:
-
-- receiving the detected **train type** from the AI module
-- receiving stop-position context from the Hub/DCU status JSON:
-  - `case`
-  - `stop_error_m`
-- allowing manual fallback input when automatic input is unavailable
-- loading matching rows from `AUSD_Lookup_135_final.csv`
-- deciding which door units should move
-- building JSON commands
-- sending commands to the **ESP32 Platform Hub**
-- receiving ACK and periodic status feedback from the Hub
-
-## System Architecture
-
-```text
-PC
-├─ AI Module (Python, YOLO)
-├─ Central Controller (Python)
-├─ ai_result.json
-└─ AUSD_Lookup_135_final.csv
-        ↓ JSON over Serial
-ESP32 Platform Hub
-        ↓ RS-485 / UART
-Arduino Mega DCUs
-        ↓
-Door Units / Sensors
-```
-
-## Control Flow
-```text
-YOLO model detects train type
-        ↓
-model.py saves ai_result.json
-        ↓
-main.py loads train_type automatically
-        ↓
-Hub/DCU sends case by status_report JSON
-        ↓
-Central Controller updates case automatically
-        ↓
-AUSD_Lookup_135_final.csv is queried
-        ↓
-Door movement commands are generated
-        ↓
-JSON command is sent to ESP32 Platform Hub
-        ↓
-ESP32 returns ACK / periodic status report
-```
+PC-based central controller for the Adaptable PSD project. The controller
+loads the AUSD lookup table, selects the doors for the detected train position,
+and communicates with PlatformHUB2 ESP32 using the New JSON protocol.
 
 ## Project Structure
+
 ```text
 central_controller/
 ├─ main.py
@@ -73,52 +22,95 @@ central_controller/
    └─ AUSD_Lookup_135_final.csv
 ```
 
-## Communication
-The PC and ESP32 communicate using:
-- USB Serial
-- JSON line protocol
-- UTF-8 encoding
-- one JSON object per line
-- 115200 bps
+## Lookup Table
 
-## PC → Hub Command JSON Example
+Runtime data source:
+
+`data/AUSD_Lookup_135_final.csv`
+
+Required columns:
+
+- `Train Type`
+- `Door No.`
+- `Case`
+- `Stop Error (mm)`
+- `Unit ID`
+- `Direction`
+- `Move Distance (mm)`
+- `Valid?`
+
+The loader converts `Stop Error (mm)` and `Move Distance (mm)` to metres for
+internal matching and distance-step calculation. `Unit ID` is used directly
+as the New JSON `dcu_idx` without renumbering.
+
+## New JSON Communication Flow
+
+The PC uses four request types:
+
+1. Send `status_request` and wait for `status_ack`.
+2. Require `train_state: "STOPPED"` and `position_valid: true`.
+3. Send `train_context` with the selected door list and wait for
+   `selection_ack` with `result: "OK"`.
+4. Send `door_control` with `action: "open"`.
+
+The ESP32 normally responds with ACK JSON. It can also send
+`emergency_status` immediately when emergency state changes.
+
+### PC to ESP32 examples
+
+```json
+{"msg_type":"status_request","platform_id":1,"seq":1,"scope":"all"}
+```
+
 ```json
 {
+  "msg_type": "train_context",
   "platform_id": 1,
-  "seq": 0,
+  "seq": 2,
+  "train_present": true,
+  "case": 4,
   "doors": [
-    {
-      "dcu_idx": 4,
-      "cmd": "Open",
-      "dir": "Right",
-      "dist_step": 3
-    }
+    {"dcu_idx": 0, "dir": "Left", "open_dist_step": 8},
+    {"dcu_idx": 1, "dir": "Right", "open_dist_step": 8}
   ]
 }
 ```
 
-## Hub → PC ACK JSON Example
 ```json
-{
-  "msg_type": "ack",
-  "platform_id": 1,
-  "result": "OK",
-  "last_seq": 0,
-  "status": "OPENING"
-}
+{"msg_type":"door_control","platform_id":1,"seq":3,"action":"open"}
 ```
 
-## Hub → PC Periodic Status JSON Example
 ```json
-{
-  "msg_type": "status_report",
-  "platform_id": 1,
-  "case": 3
-}
+{"msg_type":"door_control","platform_id":1,"seq":4,"action":"close"}
 ```
 
-## AI Result File Example
-model.py saves the final train-type decision to ai_result.json.
+```json
+{"msg_type":"door_control","platform_id":1,"seq":5,"action":"stop"}
+```
+
+```json
+{"msg_type":"emergency_control","platform_id":1,"seq":6,"action":"enter"}
+```
+
+```json
+{"msg_type":"emergency_control","platform_id":1,"seq":7,"action":"release"}
+```
+
+`dcu_idx` follows the New JSON range `0~159`. `seq` starts at `1` and is
+monotonically increased for every request.
+
+If an AUSD row has a `dcu_idx` outside `0~159`, the controller ignores that
+door and prints a warning before sending the request. If every selected door
+is outside the range, the request is rejected because no valid door remains.
+
+The current AUSD CSV contains KTX-1 rows with `Unit ID` values up to `248`.
+KTX-1 doors above `dcu_idx=159` are ignored because they cannot be represented
+by the current New JSON PlatformHUB range.
+
+## AI Result
+
+`model.py` saves the detected train type to `ai_result.json`.
+
 ```json
 {
   "train_type": "지하철 대형통근형",
@@ -128,47 +120,49 @@ model.py saves the final train-type decision to ai_result.json.
 }
 ```
 
-## Data Source
-### Runtime
-- `data/AUSD_Lookup_135_final.csv`
+The train names used by the current AUSD table include `GTX-A`, `KTX-1`,
+`KTX-산천`, `KTX-청룡`, `KTX-이음`, `누리로`, and `지하철 대형통근형`.
 
-## How to Run
-### 1. Install dependencies
-`pip install -r requirements.txt`
+## Configuration
 
-### 2. Prepare CSV
-Place `AUSD_Lookup_135_final.csv` in the `data` folder.
+Edit `config.py` for serial settings:
 
-The AUSD format stores `Stop Error (mm)` and `Move Distance (mm)` in
-millimetres and identifies one door unit with `Unit ID`. The loader converts
-these values into the metre-based runtime format.
-
-### 3. Configure serial
-Edit `config.py`:
 ```python
 USE_MOCK_SERIAL = True
 SERIAL_PORT = "COM4"
 BAUDRATE = 115200
 ```
-- USE_MOCK_SERIAL = True → test mode without ESP32
-- USE_MOCK_SERIAL = False → real serial communication with ESP32
 
-### 4. Run AI detection
-`python model.py`
+- `USE_MOCK_SERIAL = True`: run without ESP32 using the New JSON mock
+- `USE_MOCK_SERIAL = False`: use the configured serial port
 
-### 5. Run central controller
-`python main.py`
+## Run
 
-## CLI Example
 ```text
+pip install -r requirements.txt
+python model.py
+python main.py
+```
+
+## CLI
+
+```text
+help
+state
+status [active|all]
+reload
+reset
+seq-reset
 train GTX-A
 case 3
 error 0.00
 open
 close
 stop
-stop-all
-emergency on
-reset
-seq-reset
+depart
+emergency on|off
+quit
 ```
+
+`open` automatically sends `train_context`, waits for a successful
+`selection_ack`, and then sends `door_control/open`.

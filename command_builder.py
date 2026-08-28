@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from config import (
     DIST_STEP_MAX,
     DIST_STEP_WIDTH_M,
     DOOR_ID_MAX,
     DOOR_ID_MIN,
-    AUSD_UNIT_ID_IS_1_BASED,
     STOP_ERROR_FALLBACK_MAX_GAP_M,
     STOP_ERROR_MATCH_TOL_M,
 )
@@ -16,11 +15,10 @@ from data_loader import AUSDLookupRepository, AUSDLookupRow
 
 
 @dataclass
-class DoorCommand:
+class DoorSelection:
     dcu_idx: int
-    cmd: str
     dir: str
-    dist_step: int
+    open_dist_step: int
 
 
 class CommandBuilder:
@@ -64,7 +62,8 @@ class CommandBuilder:
 
     @staticmethod
     def _unit_to_dcu_idx(unit_id_from_lookup: int) -> int:
-        return unit_id_from_lookup - 1 if AUSD_UNIT_ID_IS_1_BASED else unit_id_from_lookup
+        # AUSD CSV의 Unit ID가 이미 New JSON dcu_idx입니다.
+        return unit_id_from_lookup
 
     def _select_rows(self, train_type: str, case: int, stop_error_m: float) -> List[AUSDLookupRow]:
         candidates = [
@@ -90,13 +89,14 @@ class CommandBuilder:
             if abs(row.stop_error_m - stop_error_m) == nearest_gap
         ]
 
-    def build_open_payload(
+    def build_train_context_payload(
         self,
         train_type: str,
         case: int,
         stop_error_m: float,
         seq: int,
-    ) -> Tuple[dict, Dict[int, DoorCommand]]:
+    ) -> Tuple[dict, Dict[int, DoorSelection]]:
+        """신형 JSON의 train_context 문 지정 요청을 생성합니다."""
         rows = self._select_rows(train_type, case, stop_error_m)
         if not rows:
             raise ValueError(
@@ -104,92 +104,105 @@ class CommandBuilder:
                 f"stop_error_m={stop_error_m}"
             )
 
-        merged: Dict[int, DoorCommand] = {}
+        selected: Dict[int, DoorSelection] = {}
+        ignored_dcu_idxs = set()
 
         for row in rows:
             normalized_dir = self._normalize_dir(row.direction, row.move_distance_m)
-            dist_step = self._distance_m_to_step(row.move_distance_m)
+            open_dist_step = self._distance_m_to_step(row.move_distance_m)
 
-            if normalized_dir == "None" or dist_step == 0:
+            if normalized_dir == "None" or open_dist_step == 0:
                 continue
 
             dcu_idx = self._unit_to_dcu_idx(row.unit_id)
             if dcu_idx < DOOR_ID_MIN or dcu_idx > DOOR_ID_MAX:
+                ignored_dcu_idxs.add(dcu_idx)
                 continue
 
-            prev = merged.get(dcu_idx)
-            if prev is None:
-                merged[dcu_idx] = DoorCommand(
+            previous = selected.get(dcu_idx)
+            if previous is None:
+                selected[dcu_idx] = DoorSelection(
                     dcu_idx=dcu_idx,
-                    cmd="Open",
                     dir=normalized_dir,
-                    dist_step=dist_step,
+                    open_dist_step=open_dist_step,
                 )
-            else:
-                # 최종 프로토콜상 Both 금지 → 같은 dcu_idx 에 서로 반대 방향이 오면 상위 계산/시트 문제로 보고 실패
-                if prev.dir != normalized_dir:
-                    raise ValueError(
-                        f"Conflicting directions for dcu_idx={dcu_idx}: {prev.dir} vs {normalized_dir}. "
-                        f"'Both' is not allowed by the finalized protocol."
-                    )
-                prev.dist_step = max(prev.dist_step, dist_step)
+                continue
 
-        doors = [
-            {
-                "dcu_idx": cmd.dcu_idx,
-                "cmd": "Open",
-                "dir": cmd.dir,
-                "dist_step": cmd.dist_step,
-            }
-            for cmd in sorted(merged.values(), key=lambda x: x.dcu_idx)
-        ]
-        if not doors:
-            raise ValueError("유효한 OPEN 명령이 생성되지 않았습니다.")
+            if previous.dir != normalized_dir:
+                raise ValueError(
+                    f"Conflicting directions for dcu_idx={dcu_idx}: "
+                    f"{previous.dir} vs {normalized_dir}"
+                )
+            previous.open_dist_step = max(previous.open_dist_step, open_dist_step)
+
+        if ignored_dcu_idxs:
+            print(
+                f"[WARN] New JSON dcu_idx 범위 {DOOR_ID_MIN}~{DOOR_ID_MAX}를 "
+                f"벗어난 문을 무시했습니다: {sorted(ignored_dcu_idxs)}"
+            )
+
+        if not selected:
+            raise ValueError("유효한 train_context 문 지정이 생성되지 않았습니다.")
 
         payload = {
+            "msg_type": "train_context",
             "platform_id": self.platform_id,
             "seq": seq,
-            "doors": doors,
+            "train_present": True,
+            "case": case,
+            "doors": [
+                {
+                    "dcu_idx": selection.dcu_idx,
+                    "dir": selection.dir,
+                    "open_dist_step": selection.open_dist_step,
+                }
+                for selection in sorted(
+                    selected.values(), key=lambda item: item.dcu_idx
+                )
+            ],
         }
-        return payload, merged
+        return payload, selected
 
-    def build_close_payload(self, active_commands: Dict[int, DoorCommand], seq: int) -> dict:
-        if not active_commands:
-            raise ValueError("닫을 active_commands 가 없습니다.")
-
-        doors = [
-            {
-                "dcu_idx": cmd.dcu_idx,
-                "cmd": "Close",
-                # PDF 4.1: Close 도 Left/Right/None 만 허용, None 금지 → 직전 open 방향 유지
-                "dir": cmd.dir,
-                "dist_step": DIST_STEP_MAX,
-            }
-            for cmd in sorted(active_commands.values(), key=lambda x: x.dcu_idx)
-        ]
+    def build_train_absent_payload(self, seq: int) -> dict:
         return {
+            "msg_type": "train_context",
             "platform_id": self.platform_id,
             "seq": seq,
-            "doors": doors,
+            "train_present": False,
         }
 
-    def build_stop_payload(self, seq: int, target_doors: Optional[List[int]] = None) -> dict:
-        door_ids = (
-            target_doors
-            if target_doors is not None
-            else list(range(DOOR_ID_MIN, DOOR_ID_MAX + 1))
-        )
-        doors = [
-            {
-                "dcu_idx": dcu_idx,
-                "cmd": "Stop",
-                "dir": "None",
-                "dist_step": 0,
-            }
-            for dcu_idx in sorted(set(door_ids))
-        ]
+    def build_door_control_payload(self, action: str, seq: int) -> dict:
+        normalized_action = (action or "").strip().lower()
+        if normalized_action not in {"open", "close", "stop"}:
+            raise ValueError(f"지원하지 않는 door_control action: {action}")
+
         return {
+            "msg_type": "door_control",
             "platform_id": self.platform_id,
             "seq": seq,
-            "doors": doors,
+            "action": normalized_action,
+        }
+
+    def build_emergency_control_payload(self, action: str, seq: int) -> dict:
+        normalized_action = (action or "").strip().lower()
+        if normalized_action not in {"enter", "release"}:
+            raise ValueError(f"지원하지 않는 emergency_control action: {action}")
+
+        return {
+            "msg_type": "emergency_control",
+            "platform_id": self.platform_id,
+            "seq": seq,
+            "action": normalized_action,
+        }
+
+    def build_status_request_payload(self, scope: str, seq: int) -> dict:
+        normalized_scope = (scope or "").strip().lower()
+        if normalized_scope not in {"active", "all"}:
+            raise ValueError(f"status_request scope는 active 또는 all이어야 합니다: {scope}")
+
+        return {
+            "msg_type": "status_request",
+            "platform_id": self.platform_id,
+            "seq": seq,
+            "scope": normalized_scope,
         }

@@ -19,18 +19,19 @@ def print_help() -> None:
 -----------------
 help
 state
+status [active|all]         -> status_request 전송
 reload                     -> 현재 룩업 CSV 다시 읽기
 reset                      -> controller 상태 초기화
-seq-reset                  -> 다음 명령을 seq=0 으로 전송
+seq-reset                  -> 다음 요청을 seq=1 로 전송
 
 train GTX-A                -> AI 결과 수동 입력
 case 3                     -> 정차 case 수동 입력
 error 0.05                 -> stop_error_m 수동 입력
 
-open                       -> OPEN JSON 전송
-close                      -> CLOSE JSON 전송
-stop                       -> active doors STOP
-stop-all                   -> 전체 STOP
+open                       -> train_context 승인 후 door_control/open 전송
+close                      -> door_control/close 전송
+stop                       -> door_control/stop 전송
+depart                     -> train_context(train_present=false) 전송
 emergency on|off           -> 비상 상태 전환
 
 quit
@@ -66,7 +67,10 @@ def main() -> None:
         controller.handle_feedback(msg)
 
     if USE_MOCK_SERIAL:
-        transport = MockSerialTransport(on_message=on_serial_message)
+        transport = MockSerialTransport(
+            platform_id=PLATFORM_ID,
+            on_message=on_serial_message,
+        )
     else:
         transport = SerialTransport(
             port=SERIAL_PORT,
@@ -81,6 +85,7 @@ def main() -> None:
     )
 
     transport.connect()
+    controller.request_status(scope="all")
     print_help()
 
     try:
@@ -104,6 +109,12 @@ def main() -> None:
 
                 elif cmd == "state":
                     controller.print_state()
+
+                elif cmd == "status":
+                    if len(parts) > 2:
+                        print("[ERROR] status scope는 active 또는 all이어야 합니다.")
+                    else:
+                        controller.request_status(parts[1] if len(parts) == 2 else "all")
 
                 elif cmd == "reload":
                     repo.load()
@@ -134,10 +145,10 @@ def main() -> None:
                     controller.send_close()
 
                 elif cmd == "stop":
-                    controller.send_stop(all_doors=False)
+                    controller.send_stop()
 
-                elif cmd == "stop-all":
-                    controller.send_stop(all_doors=True)
+                elif cmd == "depart":
+                    controller.send_train_absent()
 
                 elif cmd == "emergency" and len(parts) == 2:
                     controller.set_emergency(parts[1].lower() == "on")
