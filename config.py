@@ -10,6 +10,11 @@ SERIAL_TIMEOUT_SEC = 0.2
 PLATFORM_ID = 1
 LINE_DELIMITER = "\n"
 
+# 중앙제어 상태를 HTML 시뮬레이터에 브로드캐스트하는 설정
+USE_VISUALIZATION = True
+VISUALIZATION_HOST = "127.0.0.1"
+VISUALIZATION_PORT = 8765
+
 # DEBUG_MODE=true 인 ESP32가 [DEBUG] 문자열을 Serial로 섞어 보낼 수 있으므로 무시할 prefix
 IGNORE_SERIAL_PREFIXES = ("[DEBUG]",)
 

@@ -4,9 +4,18 @@ import json
 from pathlib import Path
 
 from central_controller import CentralController
-from config import PLATFORM_ID, USE_MOCK_SERIAL, SERIAL_PORT, BAUDRATE
+from config import (
+    BAUDRATE,
+    PLATFORM_ID,
+    SERIAL_PORT,
+    USE_MOCK_SERIAL,
+    USE_VISUALIZATION,
+    VISUALIZATION_HOST,
+    VISUALIZATION_PORT,
+)
 from data_loader import AUSDLookupRepository
 from transport_serial import SerialTransport, MockSerialTransport
+from visualization_ws import VisualizationWebSocketServer
 
 
 AI_RESULT_PATH = Path("ai_result.json")
@@ -23,6 +32,8 @@ status [active|all]         -> status_request 전송
 reload                     -> 현재 룩업 CSV 다시 읽기
 reset                      -> controller 상태 초기화
 seq-reset                  -> 다음 요청을 seq=1 로 전송
+
+HTML 시뮬레이터             -> http://127.0.0.1:8000/platformhub_simulator.html
 
 train GTX-A                -> AI 결과 수동 입력
 case 3                     -> 정차 case 수동 입력
@@ -84,11 +95,21 @@ def main() -> None:
         transport=transport,
     )
 
-    transport.connect()
-    controller.request_status(scope="all")
-    print_help()
+    visualization: VisualizationWebSocketServer | None = None
+    if USE_VISUALIZATION:
+        visualization = VisualizationWebSocketServer(
+            snapshot_provider=controller.get_visualization_snapshot,
+            host=VISUALIZATION_HOST,
+            port=VISUALIZATION_PORT,
+        )
+        controller.add_state_listener(visualization.publish)
+        visualization.start()
 
     try:
+        transport.connect()
+        controller.request_status(scope="all")
+        print_help()
+
         while True:
             # AI 결과 자동 반영
             detected_train = load_ai_result()
@@ -163,6 +184,8 @@ def main() -> None:
                 print(f"[ERROR] {exc}")
 
     finally:
+        if visualization:
+            visualization.stop()
         transport.close()
 
 

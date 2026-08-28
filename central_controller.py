@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from command_builder import CommandBuilder, DoorSelection
 from data_loader import AUSDLookupRepository
@@ -10,6 +10,9 @@ from data_loader import AUSDLookupRepository
 class TransportProtocol(Protocol):
     def send_json(self, payload: dict) -> None:
         ...
+
+
+StateListener = Callable[[Dict[str, Any]], None]
 
 
 @dataclass
@@ -54,6 +57,61 @@ class CentralController:
         self.last_control_ack: Optional[Dict[str, Any]] = None
         self.last_status_ack: Optional[Dict[str, Any]] = None
         self.last_emergency_status: Optional[Dict[str, Any]] = None
+        self._state_listeners: List[StateListener] = []
+
+    def add_state_listener(self, listener: StateListener) -> None:
+        """HTML 시뮬레이터 등 상태 구독자를 추가합니다."""
+        if listener not in self._state_listeners:
+            self._state_listeners.append(listener)
+
+    def get_visualization_snapshot(self, event: str = "state_snapshot") -> Dict[str, Any]:
+        """ESP32 원본 메시지와 분리된 HTML용 현재 상태를 반환합니다."""
+        def serialize_selection(selection: DoorSelection) -> Dict[str, Any]:
+            return {
+                "dcu_idx": selection.dcu_idx,
+                "dir": selection.dir,
+                "open_dist_step": selection.open_dist_step,
+            }
+
+        return {
+            "type": "state_snapshot",
+            "event": event,
+            "platform_id": self.platform_id,
+            "controller_seq": self.seq,
+            "train_type": self.state.train_type,
+            "case": self.state.case,
+            "stop_error_m": self.state.stop_error_m,
+            "train_present": self.state.train_present,
+            "train_state": self.state.train_state,
+            "position_valid": self.state.position_valid,
+            "platform_status": self.state.platform_status,
+            "initialized": self.state.initialized,
+            "selection_valid": self.state.selection_valid,
+            "emergency": self.state.emergency,
+            "pending_doors": [
+                serialize_selection(selection)
+                for selection in sorted(
+                    self.pending_selection.values(),
+                    key=lambda item: item.dcu_idx,
+                )
+            ],
+            "selected_doors": [
+                serialize_selection(selection)
+                for selection in sorted(
+                    self.selected_doors.values(),
+                    key=lambda item: item.dcu_idx,
+                )
+            ],
+            "doors": [dict(status) for status in self.state.doors_status],
+        }
+
+    def _notify_state(self, event: str) -> None:
+        snapshot = self.get_visualization_snapshot(event=event)
+        for listener in list(self._state_listeners):
+            try:
+                listener(snapshot)
+            except Exception as exc:
+                print(f"[HTML] state listener error: {exc}")
 
     def next_seq(self) -> int:
         self.seq += 1
@@ -73,11 +131,13 @@ class CentralController:
         self.last_status_ack = None
         self.last_emergency_status = None
         print("[CTRL] controller state reset")
+        self._notify_state("reset")
 
     # ---------- 입력 업데이트 ----------
     def update_train_type(self, train_type: str) -> None:
         self.state.train_type = train_type.strip()
         print(f"[CTRL] train_type={self.state.train_type}")
+        self._notify_state("train_type_updated")
 
     def update_stop_context(self, case: int, stop_error_m: float) -> None:
         self.state.case = case
@@ -87,6 +147,7 @@ class CentralController:
         self.state.train_state = "STOPPED"
         self.state.position_valid = True
         print(f"[CTRL] case={case}, stop_error_m={stop_error_m}")
+        self._notify_state("stop_context_updated")
 
     def update_from_status_ack(self, msg: Dict[str, Any]) -> None:
         self.state.platform_status = msg.get("status")
@@ -128,6 +189,7 @@ class CentralController:
         )
         self.transport.send_json(payload)
         self.state.emergency = value
+        self._notify_state("emergency_command_sent")
         print(f"[CTRL] emergency_control sent, action={action}")
 
     # ---------- 제어 조건 검사 ----------
@@ -182,6 +244,7 @@ class CentralController:
         # ACK가 즉시 도착하는 Mock에서도 선택 정보가 먼저 존재해야 합니다.
         self.pending_selection = selection
         self.state.selection_valid = False
+        self._notify_state("train_context_sent")
         self.transport.send_json(payload)
         print(f"[CTRL] train_context sent, selected_doors={sorted(selection.keys())}")
 
@@ -203,6 +266,7 @@ class CentralController:
         self.state.train_present = False
         self.state.train_state = "EMPTY"
         self.state.selection_valid = False
+        self._notify_state("train_absent_sent")
         print("[CTRL] train_context sent, train_present=false")
 
     def request_status(self, scope: str = "all") -> None:
@@ -219,6 +283,7 @@ class CentralController:
             seq=self.next_seq(),
         )
         self.transport.send_json(payload)
+        self._notify_state(f"door_control_{action}_sent")
         print(f"[CTRL] door_control sent, action={action}")
 
     # ---------- ESP32 ACK 및 상태 처리 ----------
@@ -241,17 +306,20 @@ class CentralController:
                 self.pending_selection.clear()
                 self.selected_doors.clear()
                 self.state.selection_valid = False
+                self._notify_state("selection_rejected")
                 return
 
             self.state.selection_valid = True
             if self.pending_selection:
                 self.selected_doors = self.pending_selection
                 self.pending_selection = {}
+                self._notify_state("selection_ack")
                 # 문 지정 ACK 이후에만 실제 OPEN 요청을 전송합니다.
                 self._send_door_control("open")
             else:
                 self.selected_doors.clear()
                 self.state.selection_valid = int(msg.get("selected_count", 0) or 0) > 0
+                self._notify_state("selection_ack")
             return
 
         if msg_type == "control_ack":
@@ -265,11 +333,16 @@ class CentralController:
                 if msg.get("status") is not None:
                     self.state.platform_status = str(msg["status"])
             print(f"[CONTROL_ACK] {msg}")
+            self._notify_state("control_ack")
+            if str(msg.get("result", "")).upper() == "OK":
+                # New JSON의 정규 상태는 status_ack로 확인해 HTML에 전달합니다.
+                self.request_status(scope="active")
             return
 
         if msg_type == "status_ack":
             self.last_status_ack = msg
             self.update_from_status_ack(msg)
+            self._notify_state("status_ack")
             print(f"[STATUS_ACK] {msg}")
             return
 
@@ -278,11 +351,13 @@ class CentralController:
             self.state.emergency = bool(msg.get("active", False))
             if msg.get("status") is not None:
                 self.state.platform_status = str(msg["status"])
+            self._notify_state("emergency_status")
             print(f"[EMERGENCY_STATUS] {msg}")
             return
 
         if msg_type == "ack":
             self.last_ack = msg
+            self._notify_state("ack")
             print(f"[ACK] {msg}")
             return
 

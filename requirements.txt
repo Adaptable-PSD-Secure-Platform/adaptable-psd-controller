@@ -1,1 +1,2 @@
 pyserial
+websockets>=12,<16

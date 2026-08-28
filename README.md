@@ -14,6 +14,8 @@ central_controller/
 ├─ command_builder.py
 ├─ data_loader.py
 ├─ transport_serial.py
+├─ visualization_ws.py
+├─ platformhub_simulator.html
 ├─ config.py
 ├─ requirements.txt
 ├─ best.pt
@@ -135,12 +137,37 @@ BAUDRATE = 115200
 
 - `USE_MOCK_SERIAL = True`: run without ESP32 using the New JSON mock
 - `USE_MOCK_SERIAL = False`: use the configured serial port
+- `USE_VISUALIZATION = True`: publish the central state to the connected HTML
+  simulator through WebSocket
 
 ## Run
 
 ```text
 pip install -r requirements.txt
-python model.py
+```
+
+Open the following page in a browser after starting the local HTTP server:
+
+`http://127.0.0.1:8000/platformhub_simulator.html`
+
+The HTML simulator is connected-mode only. It does not issue commands and it
+does not use its own lookup table. Enter commands in the `main.py` terminal;
+the page renders the state snapshots published by the central controller.
+
+The previous `train-2d-simulator-portable-v0.14.html` file is not used by the
+controller. Use `platformhub_simulator.html` as the official connected UI.
+
+Run the local HTTP server and the controller in separate terminals:
+
+Terminal 1:
+
+```text
+python -m http.server 8000
+```
+
+Terminal 2:
+
+```text
 python main.py
 ```
 
