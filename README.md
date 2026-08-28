@@ -13,7 +13,7 @@ The central controller is responsible for:
   - `case`
   - `stop_error_m`
 - allowing manual fallback input when automatic input is unavailable
-- loading matching rows from `Movement_Data.csv`
+- loading matching rows from `AUSD_Lookup_135_final.csv`
 - deciding which door units should move
 - building JSON commands
 - sending commands to the **ESP32 Platform Hub**
@@ -26,7 +26,7 @@ PC
 ├─ AI Module (Python, YOLO)
 ├─ Central Controller (Python)
 ├─ ai_result.json
-└─ Movement_Data.csv
+└─ AUSD_Lookup_135_final.csv
         ↓ JSON over Serial
 ESP32 Platform Hub
         ↓ RS-485 / UART
@@ -47,7 +47,7 @@ Hub/DCU sends case by status_report JSON
         ↓
 Central Controller updates case automatically
         ↓
-Movement_Data.csv is queried
+AUSD_Lookup_135_final.csv is queried
         ↓
 Door movement commands are generated
         ↓
@@ -70,7 +70,7 @@ central_controller/
 ├─ best.pt
 ├─ ai_result.json
 └─ data/
-   └─ Movement_Data.csv
+   └─ AUSD_Lookup_135_final.csv
 ```
 
 ## Communication
@@ -121,7 +121,7 @@ The PC and ESP32 communicate using:
 model.py saves the final train-type decision to ai_result.json.
 ```json
 {
-  "train_type": "지하철",
+  "train_type": "지하철 대형통근형",
   "frame": 334,
   "elapsed_sec": 27.2,
   "locked": true
@@ -130,15 +130,18 @@ model.py saves the final train-type decision to ai_result.json.
 
 ## Data Source
 ### Runtime
-- `data/Movement_Data.csv`
+- `data/AUSD_Lookup_135_final.csv`
 
 ## How to Run
 ### 1. Install dependencies
 `pip install -r requirements.txt`
 
 ### 2. Prepare CSV
-Place the runtime file here:
-`data/Movement_Data.csv`
+Place `AUSD_Lookup_135_final.csv` in the `data` folder.
+
+The AUSD format stores `Stop Error (mm)` and `Move Distance (mm)` in
+millimetres and identifies one door unit with `Unit ID`. The loader converts
+these values into the metre-based runtime format.
 
 ### 3. Configure serial
 Edit `config.py`:

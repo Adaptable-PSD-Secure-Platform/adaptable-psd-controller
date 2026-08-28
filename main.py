@@ -5,7 +5,7 @@ from pathlib import Path
 
 from central_controller import CentralController
 from config import PLATFORM_ID, USE_MOCK_SERIAL, SERIAL_PORT, BAUDRATE
-from data_loader import MovementDataRepository
+from data_loader import AUSDLookupRepository
 from transport_serial import SerialTransport, MockSerialTransport
 
 
@@ -19,7 +19,7 @@ def print_help() -> None:
 -----------------
 help
 state
-reload                     -> Movement_Data.csv 다시 읽기
+reload                     -> 현재 룩업 CSV 다시 읽기
 reset                      -> controller 상태 초기화
 seq-reset                  -> 다음 명령을 seq=0 으로 전송
 
@@ -59,7 +59,7 @@ def load_ai_result() -> str | None:
 
 
 def main() -> None:
-    repo = MovementDataRepository()
+    repo = AUSDLookupRepository()
     controller: CentralController
 
     def on_serial_message(msg: dict) -> None:
@@ -107,7 +107,7 @@ def main() -> None:
 
                 elif cmd == "reload":
                     repo.load()
-                    print("[INFO] Movement_Data.csv reloaded")
+                    print(f"[INFO] {repo.csv_path.name} reloaded")
 
                 elif cmd == "reset":
                     controller.reset_state()

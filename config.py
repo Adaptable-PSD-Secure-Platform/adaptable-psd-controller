@@ -18,18 +18,19 @@ IGNORE_SERIAL_PREFIXES = ("[DEBUG]",)
 # -----------------------------
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
-MOVEMENT_CSV_PATH = DATA_DIR / "Movement_Data.csv"
+AUSD_LOOKUP_CSV_PATH = DATA_DIR / "AUSD_Lookup_135_final.csv"
 
-# Inputs 시트 기준
+# AUSD 룩업 기준
 UNIT_WIDTH_M = 1.4
 UNIT_DIVISIONS = 8
 DIST_STEP_MAX = 8
 DIST_STEP_WIDTH_M = UNIT_WIDTH_M / UNIT_DIVISIONS  # 0.175m
-SHEET_UNIT_ID_IS_1_BASED = True
+AUSD_UNIT_ID_IS_1_BASED = True
 
-# Hub 규격 (PDF 4.1): dcu_idx 0~159
+# AUSD 룩업의 Unit ID는 1-based이며 현재 최대값은 248입니다.
+# Hub 명령의 dcu_idx는 0-based로 변환하므로 허용 범위는 0~247입니다.
 DOOR_ID_MIN = 0
-DOOR_ID_MAX = 159
+DOOR_ID_MAX = 247
 
 # Stop Error 매칭 허용 오차
 STOP_ERROR_MATCH_TOL_M = 1e-6

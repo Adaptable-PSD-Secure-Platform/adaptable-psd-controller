@@ -13,18 +13,27 @@ CONFIDENCE_THRESHOLD = 0.75
 DECISION_THRESHOLD = 0.60
 
 # ── 클래스 이름 변환 테이블 ──
+# 현재 AUSD 룩업 테이블의 열차명에 맞춥니다.
 CLASS_MAP = {
-    "ktx1": "KTX",
-    "ktx2": "KTX",
-    "cube": "지하철",
+    "ktx1": "KTX-1",
+    "ktx2": "KTX-산천",
+    "cube": "지하철 대형통근형",
     "nuri": "누리로",
     "itx": "다른 열차",
     "mugungwha": "다른 열차",
-    "srt": "KTX",
+    "srt": "KTX-산천",
 }
 
 # ── 제어 대상 열차 ──
-CONTROLLABLE = ["KTX", "누리로", "지하철"]
+CONTROLLABLE = [
+    "GTX-A",
+    "KTX-1",
+    "KTX-산천",
+    "KTX-청룡",
+    "KTX-이음",
+    "누리로",
+    "지하철 대형통근형",
+]
 
 # ── AI 결과 저장 파일 ──
 AI_RESULT_PATH = Path("ai_result.json")

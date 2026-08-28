@@ -5,37 +5,48 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
-from config import CSV_ENCODINGS, MOVEMENT_CSV_PATH
+from config import AUSD_LOOKUP_CSV_PATH, CSV_ENCODINGS
+
+
+REQUIRED_COLUMNS = {
+    "Train Type",
+    "Door No.",
+    "Case",
+    "Stop Error (mm)",
+    "Unit ID",
+    "Direction",
+    "Move Distance (mm)",
+    "Valid?",
+}
 
 
 @dataclass(frozen=True)
-class MovementRow:
+class AUSDLookupRow:
     train_type: str
     door_no: int
     case: int
     stop_error_m: float
-    open_unit_start: int
-    open_unit_end: int
+    unit_id: int
     direction: str
     move_distance_m: float
     valid: str
 
 
-class MovementDataRepository:
+class AUSDLookupRepository:
     """
-    Movement_Data.csv 로부터 lookup 용 데이터를 읽는 저장소.
-    런타임에는 이 CSV 하나만 사용하고, Inputs / Train_Door_DB 는 참조용으로 분리 보관합니다.
+    AUSD_Lookup_135_final.csv를 읽는 저장소.
+    AUSD 원본의 mm 단위와 1-based Unit ID를 런타임 형식으로 변환합니다.
     """
 
-    def __init__(self, csv_path: Path = MOVEMENT_CSV_PATH) -> None:
+    def __init__(self, csv_path: Path = AUSD_LOOKUP_CSV_PATH) -> None:
         self.csv_path = Path(csv_path)
-        self.rows: List[MovementRow] = []
-        self.index: Dict[str, List[MovementRow]] = {}
+        self.rows: List[AUSDLookupRow] = []
+        self.index: Dict[str, List[AUSDLookupRow]] = {}
         self.load()
 
     @staticmethod
-    def _clean_key(key: str) -> str:
-        return key.strip().replace("\ufeff", "")
+    def _clean_key(key: object) -> str:
+        return str(key or "").strip().replace("\ufeff", "")
 
     def _open_with_fallback(self):
         last_error = None
@@ -60,8 +71,8 @@ class MovementDataRepository:
     def load(self) -> None:
         if not self.csv_path.exists():
             raise FileNotFoundError(
-                f"Movement_Data.csv 파일을 찾을 수 없습니다: {self.csv_path}\n"
-                f"엑셀의 Movement_Data 시트를 UTF-8 CSV 로 export 해서 data 폴더에 넣어주세요."
+                f"AUSD 룩업 CSV 파일을 찾을 수 없습니다: {self.csv_path}\n"
+                f"data 폴더에 AUSD_Lookup_135_final.csv 파일을 넣어주세요."
             )
 
         self.rows.clear()
@@ -70,47 +81,41 @@ class MovementDataRepository:
         with self._open_with_fallback() as f:
             reader = csv.DictReader(f)
             fieldnames = [self._clean_key(name) for name in (reader.fieldnames or [])]
-            normalized_rows = []
+            missing = REQUIRED_COLUMNS - set(fieldnames)
+            if missing:
+                raise ValueError(
+                    "AUSD_Lookup_135_final.csv 필수 컬럼이 부족합니다.\n"
+                    f"missing={sorted(missing)}\n"
+                    f"found={fieldnames}"
+                )
+
             for raw in reader:
+                if not any(value not in (None, "") for value in raw.values()):
+                    continue
                 row = {
                     self._clean_key(k): (v.strip() if isinstance(v, str) else v)
                     for k, v in raw.items()
                 }
-                normalized_rows.append(row)
 
-        required_cols = {
-            "Train Type",
-            "Door No.",
-            "Case",
-            "Stop Error (m)",
-            "Open Unit Start",
-            "Open Unit End",
-            "Direction",
-            "Move Distance (m)",
-            "Valid?",
-        }
-        missing = required_cols - set(fieldnames)
-        if missing:
+                item = AUSDLookupRow(
+                    train_type=row["Train Type"],
+                    door_no=int(float(row["Door No."])),
+                    case=int(float(row["Case"])),
+                    stop_error_m=float(row["Stop Error (mm)"]) / 1000.0,
+                    unit_id=int(float(row["Unit ID"])),
+                    direction=row["Direction"],
+                    move_distance_m=float(row["Move Distance (mm)"]) / 1000.0,
+                    valid=row["Valid?"],
+                )
+                self.rows.append(item)
+                self.index.setdefault(item.train_type, []).append(item)
+
+        if not self.rows:
             raise ValueError(
-                "Movement_Data.csv 필수 컬럼이 부족합니다.\n"
-                f"missing={sorted(missing)}\n"
-                f"found={fieldnames}"
+                "AUSD_Lookup_135_final.csv에 읽을 수 있는 데이터 행이 없습니다."
             )
 
-        for row in normalized_rows:
-            item = MovementRow(
-                train_type=row["Train Type"],
-                door_no=int(float(row["Door No."])),
-                case=int(float(row["Case"])),
-                stop_error_m=float(row["Stop Error (m)"]),
-                open_unit_start=int(float(row["Open Unit Start"])),
-                open_unit_end=int(float(row["Open Unit End"])),
-                direction=row["Direction"],
-                move_distance_m=float(row["Move Distance (m)"]),
-                valid=row["Valid?"],
-            )
-            self.rows.append(item)
-            self.index.setdefault(item.train_type, []).append(item)
+        print(f"[DATA] AUSD lookup loaded: rows={len(self.rows)}")
 
-    def get_rows_for_train(self, train_type: str) -> List[MovementRow]:
-        return self.index.get(train_type, [])
+    def get_rows_for_train(self, train_type: str) -> List[AUSDLookupRow]:
+        return self.index.get(self._clean_key(train_type), [])

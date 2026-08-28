@@ -8,11 +8,11 @@ from config import (
     DIST_STEP_WIDTH_M,
     DOOR_ID_MAX,
     DOOR_ID_MIN,
-    SHEET_UNIT_ID_IS_1_BASED,
+    AUSD_UNIT_ID_IS_1_BASED,
     STOP_ERROR_FALLBACK_MAX_GAP_M,
     STOP_ERROR_MATCH_TOL_M,
 )
-from data_loader import MovementDataRepository, MovementRow
+from data_loader import AUSDLookupRepository, AUSDLookupRow
 
 
 @dataclass
@@ -24,7 +24,7 @@ class DoorCommand:
 
 
 class CommandBuilder:
-    def __init__(self, repo: MovementDataRepository, platform_id: int) -> None:
+    def __init__(self, repo: AUSDLookupRepository, platform_id: int) -> None:
         self.repo = repo
         self.platform_id = platform_id
 
@@ -63,10 +63,10 @@ class CommandBuilder:
         return step
 
     @staticmethod
-    def _sheet_unit_to_dcu_idx(unit_id_from_sheet: int) -> int:
-        return unit_id_from_sheet - 1 if SHEET_UNIT_ID_IS_1_BASED else unit_id_from_sheet
+    def _unit_to_dcu_idx(unit_id_from_lookup: int) -> int:
+        return unit_id_from_lookup - 1 if AUSD_UNIT_ID_IS_1_BASED else unit_id_from_lookup
 
-    def _select_rows(self, train_type: str, case: int, stop_error_m: float) -> List[MovementRow]:
+    def _select_rows(self, train_type: str, case: int, stop_error_m: float) -> List[AUSDLookupRow]:
         candidates = [
             row for row in self.repo.get_rows_for_train(train_type)
             if row.case == case and row.valid.upper() == "OK"
@@ -100,7 +100,8 @@ class CommandBuilder:
         rows = self._select_rows(train_type, case, stop_error_m)
         if not rows:
             raise ValueError(
-                f"Movement_Data 매칭 실패: train_type={train_type}, case={case}, stop_error_m={stop_error_m}"
+                f"AUSD 룩업 매칭 실패: train_type={train_type}, case={case}, "
+                f"stop_error_m={stop_error_m}"
             )
 
         merged: Dict[int, DoorCommand] = {}
@@ -112,30 +113,26 @@ class CommandBuilder:
             if normalized_dir == "None" or dist_step == 0:
                 continue
 
-            start_unit = min(row.open_unit_start, row.open_unit_end)
-            end_unit = max(row.open_unit_start, row.open_unit_end)
+            dcu_idx = self._unit_to_dcu_idx(row.unit_id)
+            if dcu_idx < DOOR_ID_MIN or dcu_idx > DOOR_ID_MAX:
+                continue
 
-            for unit_id in range(start_unit, end_unit + 1):
-                dcu_idx = self._sheet_unit_to_dcu_idx(unit_id)
-                if dcu_idx < DOOR_ID_MIN or dcu_idx > DOOR_ID_MAX:
-                    continue
-
-                prev = merged.get(dcu_idx)
-                if prev is None:
-                    merged[dcu_idx] = DoorCommand(
-                        dcu_idx=dcu_idx,
-                        cmd="Open",
-                        dir=normalized_dir,
-                        dist_step=dist_step,
+            prev = merged.get(dcu_idx)
+            if prev is None:
+                merged[dcu_idx] = DoorCommand(
+                    dcu_idx=dcu_idx,
+                    cmd="Open",
+                    dir=normalized_dir,
+                    dist_step=dist_step,
+                )
+            else:
+                # 최종 프로토콜상 Both 금지 → 같은 dcu_idx 에 서로 반대 방향이 오면 상위 계산/시트 문제로 보고 실패
+                if prev.dir != normalized_dir:
+                    raise ValueError(
+                        f"Conflicting directions for dcu_idx={dcu_idx}: {prev.dir} vs {normalized_dir}. "
+                        f"'Both' is not allowed by the finalized protocol."
                     )
-                else:
-                    # 최종 프로토콜상 Both 금지 → 같은 dcu_idx 에 서로 반대 방향이 오면 상위 계산/시트 문제로 보고 실패
-                    if prev.dir != normalized_dir:
-                        raise ValueError(
-                            f"Conflicting directions for dcu_idx={dcu_idx}: {prev.dir} vs {normalized_dir}. "
-                            f"'Both' is not allowed by the finalized protocol."
-                        )
-                    prev.dist_step = max(prev.dist_step, dist_step)
+                prev.dist_step = max(prev.dist_step, dist_step)
 
         doors = [
             {
@@ -177,7 +174,11 @@ class CommandBuilder:
         }
 
     def build_stop_payload(self, seq: int, target_doors: Optional[List[int]] = None) -> dict:
-        door_ids = target_doors if target_doors is not None else list(range(DOOR_ID_MIN, DOOR_ID_MAX + 1))
+        door_ids = (
+            target_doors
+            if target_doors is not None
+            else list(range(DOOR_ID_MIN, DOOR_ID_MAX + 1))
+        )
         doors = [
             {
                 "dcu_idx": dcu_idx,
