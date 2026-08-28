@@ -38,8 +38,10 @@ HTML 시뮬레이터             -> http://127.0.0.1:8000/platformhub_simulator.
 train GTX-A                -> AI 결과 수동 입력
 case 3                     -> 정차 case 수동 입력
 error 0.05                 -> stop_error_m 수동 입력
+mock-status STOPPED 1 true -> Mock의 다음 status_ack 상태 설정 후 조회
 
-open                       -> train_context 승인 후 door_control/open 전송
+select                     -> status_ack 확인 후 train_context 문 지정 전송
+open                       -> 직전에 승인된 train_context에 door_control/open 적용
 close                      -> door_control/close 전송
 stop                       -> door_control/stop 전송
 depart                     -> train_context(train_present=false) 전송
@@ -107,7 +109,6 @@ def main() -> None:
 
     try:
         transport.connect()
-        controller.request_status(scope="all")
         print_help()
 
         while True:
@@ -153,11 +154,33 @@ def main() -> None:
 
                 elif cmd == "case" and len(parts) == 2:
                     current_error = controller.state.stop_error_m or 0.0
-                    controller.update_stop_context(int(parts[1]), current_error)
+                    case = int(parts[1])
+                    controller.update_stop_context(case, current_error)
+                    if isinstance(transport, MockSerialTransport):
+                        # 사용자가 입력한 case를 다음 Mock status_ack에 반영하되,
+                        # status 명령을 입력하기 전에는 아무 응답도 만들지 않습니다.
+                        transport.set_train_status("STOPPED", case, True)
 
                 elif cmd == "error" and len(parts) == 2:
                     current_case = controller.state.case or 1
                     controller.update_stop_context(current_case, float(parts[1]))
+
+                elif cmd == "mock-status" and len(parts) == 4:
+                    if not isinstance(transport, MockSerialTransport):
+                        print("[ERROR] mock-status는 USE_MOCK_SERIAL=True일 때만 사용할 수 있습니다.")
+                    else:
+                        mock_case = None if parts[2].lower() == "none" else int(parts[2])
+                        mock_position_valid = parts[3].lower() in {"true", "1", "yes", "valid"}
+                        transport.set_train_status(
+                            train_state=parts[1],
+                            case=mock_case,
+                            position_valid=mock_position_valid,
+                        )
+                        # ESP32의 status_ack를 받는 것과 같은 경로로 처리합니다.
+                        controller.request_status(scope="active")
+
+                elif cmd == "select":
+                    controller.send_train_context()
 
                 elif cmd == "open":
                     controller.send_open()

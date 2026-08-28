@@ -38,6 +38,9 @@ DOOR_ID_MAX = 159
 # Stop Error 매칭 허용 오차
 STOP_ERROR_MATCH_TOL_M = 1e-6
 STOP_ERROR_FALLBACK_MAX_GAP_M = 0.051
+# New JSON status_ack에는 case가 오지만 stop_error가 오지 않습니다.
+# 현재 AUSD 룩업은 stop_error 축도 가지므로, 별도 오차 입력이 없을 때는 0mm 행을 사용합니다.
+DEFAULT_STOP_ERROR_M = 0.0
 
 # CSV 인코딩 fallback
 CSV_ENCODINGS = ("utf-8-sig", "cp949", "euc-kr", "utf-8")

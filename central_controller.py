@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
 from command_builder import CommandBuilder, DoorSelection
+from config import DEFAULT_STOP_ERROR_M
 from data_loader import AUSDLookupRepository
 
 
@@ -51,6 +52,8 @@ class CentralController:
         # train_context 승인 전/후의 문 지정 정보를 분리해 보관합니다.
         self.pending_selection: Dict[int, DoorSelection] = {}
         self.selected_doors: Dict[int, DoorSelection] = {}
+        self._selection_context_key: Optional[Tuple[str, int, float]] = None
+        self._status_gate_approved = False
 
         self.last_ack: Optional[Dict[str, Any]] = None
         self.last_selection_ack: Optional[Dict[str, Any]] = None
@@ -84,6 +87,7 @@ class CentralController:
             "train_present": self.state.train_present,
             "train_state": self.state.train_state,
             "position_valid": self.state.position_valid,
+            "status_gate_approved": self._status_gate_approved,
             "platform_status": self.state.platform_status,
             "initialized": self.state.initialized,
             "selection_valid": self.state.selection_valid,
@@ -125,6 +129,8 @@ class CentralController:
         self.state = OperatorState()
         self.pending_selection.clear()
         self.selected_doors.clear()
+        self._selection_context_key = None
+        self._status_gate_approved = False
         self.last_ack = None
         self.last_selection_ack = None
         self.last_control_ack = None
@@ -135,11 +141,30 @@ class CentralController:
 
     # ---------- 입력 업데이트 ----------
     def update_train_type(self, train_type: str) -> None:
-        self.state.train_type = train_type.strip()
+        normalized_train_type = train_type.strip()
+        if normalized_train_type != self.state.train_type:
+            self.pending_selection.clear()
+            self.selected_doors.clear()
+            self._selection_context_key = None
+            self.state.selection_valid = False
+            # 새 열차 종류가 감지되면 이전 열차의 status_ack 승인도 폐기합니다.
+            # 새 status_request/status_ack를 받은 뒤에만 문 지정을 허용합니다.
+            self._status_gate_approved = False
+            self.state.case = None
+            self.state.stop_error_m = None
+        self.state.train_type = normalized_train_type
         print(f"[CTRL] train_type={self.state.train_type}")
         self._notify_state("train_type_updated")
 
     def update_stop_context(self, case: int, stop_error_m: float) -> None:
+        # 수동 입력은 상태 응답을 대체하지 않습니다. 실제 train_context 전송은
+        # ESP32 status_ack에서 STOPPED + position_valid=true를 받은 뒤에만 허용합니다.
+        self._status_gate_approved = False
+        if self.state.case != case or self.state.stop_error_m != stop_error_m:
+            self.pending_selection.clear()
+            self.selected_doors.clear()
+            self._selection_context_key = None
+            self.state.selection_valid = False
         self.state.case = case
         self.state.stop_error_m = stop_error_m
         # 수동 입력은 status_request를 대신하는 운용자 fallback입니다.
@@ -150,6 +175,10 @@ class CentralController:
         self._notify_state("stop_context_updated")
 
     def update_from_status_ack(self, msg: Dict[str, Any]) -> None:
+        previous_case = self.state.case
+        previous_train_state = self.state.train_state
+        if str(msg.get("result", "OK")).upper() != "OK":
+            self._status_gate_approved = False
         self.state.platform_status = msg.get("status")
         if self.state.platform_status is not None:
             self.state.emergency = str(self.state.platform_status) == "EMERGENCY"
@@ -170,12 +199,52 @@ class CentralController:
             except (TypeError, ValueError):
                 print(f"[CTRL] invalid case in status_ack: {msg.get('case')}")
 
+        # 문서상 status_ack에는 stop_error가 없지만, 확장 응답이 들어오면
+        # 내부 룩업 매칭에만 사용합니다. New JSON으로는 전송하지 않습니다.
+        if "stop_error_m" in msg:
+            try:
+                self.state.stop_error_m = float(msg["stop_error_m"])
+            except (TypeError, ValueError):
+                print(f"[CTRL] invalid stop_error_m in status_ack: {msg.get('stop_error_m')}")
+        elif "stop_error_mm" in msg:
+            try:
+                self.state.stop_error_m = float(msg["stop_error_mm"]) / 1000.0
+            except (TypeError, ValueError):
+                print(f"[CTRL] invalid stop_error_mm in status_ack: {msg.get('stop_error_mm')}")
+
         doors_status = msg.get("doors_status")
         if isinstance(doors_status, list):
             self.state.doors_status = doors_status
 
         if self.state.platform_status == "EMERGENCY":
             self.state.emergency = True
+
+        if self.state.case != previous_case or (
+            previous_train_state == "EMPTY" and self.state.train_state != "EMPTY"
+        ):
+            self.pending_selection.clear()
+            self.selected_doors.clear()
+            self._selection_context_key = None
+            self.state.selection_valid = False
+
+        if self.state.train_state == "EMPTY":
+            self.pending_selection.clear()
+            self.selected_doors.clear()
+            self._selection_context_key = None
+            self.state.selection_valid = False
+
+        self._status_gate_approved = (
+            str(msg.get("result", "OK")).upper() == "OK"
+            and self.state.train_state == "STOPPED"
+            and self.state.position_valid is True
+            and self.state.case is not None
+            and self.state.train_present is not False
+        )
+        if not self._status_gate_approved:
+            self.pending_selection.clear()
+            self.selected_doors.clear()
+            self._selection_context_key = None
+            self.state.selection_valid = False
 
     def set_emergency(self, value: bool) -> None:
         if self.state.emergency == value:
@@ -193,7 +262,7 @@ class CentralController:
         print(f"[CTRL] emergency_control sent, action={action}")
 
     # ---------- 제어 조건 검사 ----------
-    def can_open(self) -> bool:
+    def can_send_train_context(self) -> bool:
         s = self.state
 
         if s.emergency:
@@ -204,15 +273,18 @@ class CentralController:
             print("[BLOCK] train_type 이 없습니다.")
             return False
 
-        if s.case is None or s.stop_error_m is None:
-            print("[BLOCK] case / stop_error_m 이 없습니다.")
+        if s.case is None:
+            print("[BLOCK] status_ack의 case가 없습니다.")
             return False
 
-        if s.train_present is False or s.train_state != "STOPPED" or s.position_valid is not True:
-            print("[BLOCK] train_state=STOPPED 및 position_valid=true 상태가 필요합니다.")
+        if not self._status_gate_approved:
+            print("[BLOCK] ESP32 status_ack에서 train_state=STOPPED 및 position_valid=true 확인이 필요합니다.")
             return False
 
         return True
+
+    def can_open(self) -> bool:
+        return self.can_control_selected_doors()
 
     def can_control_selected_doors(self) -> bool:
         if self.state.emergency:
@@ -230,23 +302,52 @@ class CentralController:
         return True
 
     # ---------- New JSON 요청 ----------
-    def send_open(self) -> None:
-        if not self.can_open():
+    def send_train_context(self) -> None:
+        """현재 정차 상태에 대한 문 지정만 전송합니다."""
+        if not self.can_send_train_context():
             return
+
+        if self.pending_selection:
+            print("[BLOCK] train_context 승인 응답을 기다리는 중입니다.")
+            return
+
+        if self.selected_doors and self.state.selection_valid is True:
+            print("[INFO] 이미 승인된 train_context가 있습니다. open 명령을 사용하세요.")
+            return
+
+        self._send_train_context()
+
+    def _send_train_context(self) -> None:
+        stop_error_m = (
+            self.state.stop_error_m
+            if self.state.stop_error_m is not None
+            else DEFAULT_STOP_ERROR_M
+        )
 
         payload, selection = self.builder.build_train_context_payload(
             train_type=self.state.train_type,
             case=self.state.case,
-            stop_error_m=self.state.stop_error_m,
+            stop_error_m=stop_error_m,
             seq=self.next_seq(),
         )
 
         # ACK가 즉시 도착하는 Mock에서도 선택 정보가 먼저 존재해야 합니다.
         self.pending_selection = selection
+        self._selection_context_key = (
+            self.state.train_type or "",
+            int(self.state.case),
+            round(float(stop_error_m), 6),
+        )
         self.state.selection_valid = False
         self._notify_state("train_context_sent")
         self.transport.send_json(payload)
         print(f"[CTRL] train_context sent, selected_doors={sorted(selection.keys())}")
+
+    def send_open(self) -> None:
+        """직전에 selection_ack로 승인된 train_context에 OPEN을 적용합니다."""
+        if not self.can_open():
+            return
+        self._send_door_control("open")
 
     def send_close(self) -> None:
         if not self.can_control_selected_doors():
@@ -263,6 +364,8 @@ class CentralController:
         self.transport.send_json(payload)
         self.pending_selection.clear()
         self.selected_doors.clear()
+        self._selection_context_key = None
+        self._status_gate_approved = False
         self.state.train_present = False
         self.state.train_state = "EMPTY"
         self.state.selection_valid = False
@@ -305,6 +408,7 @@ class CentralController:
             if str(msg.get("result", "")).upper() != "OK":
                 self.pending_selection.clear()
                 self.selected_doors.clear()
+                self._selection_context_key = None
                 self.state.selection_valid = False
                 self._notify_state("selection_rejected")
                 return
@@ -314,11 +418,10 @@ class CentralController:
                 self.selected_doors = self.pending_selection
                 self.pending_selection = {}
                 self._notify_state("selection_ack")
-                # 문 지정 ACK 이후에만 실제 OPEN 요청을 전송합니다.
-                self._send_door_control("open")
             else:
-                self.selected_doors.clear()
-                self.state.selection_valid = int(msg.get("selected_count", 0) or 0) > 0
+                self.state.selection_valid = bool(self.selected_doors) or int(
+                    msg.get("selected_count", 0) or 0
+                ) > 0
                 self._notify_state("selection_ack")
             return
 
@@ -334,9 +437,6 @@ class CentralController:
                     self.state.platform_status = str(msg["status"])
             print(f"[CONTROL_ACK] {msg}")
             self._notify_state("control_ack")
-            if str(msg.get("result", "")).upper() == "OK":
-                # New JSON의 정규 상태는 status_ack로 확인해 HTML에 전달합니다.
-                self.request_status(scope="active")
             return
 
         if msg_type == "status_ack":
@@ -370,6 +470,8 @@ class CentralController:
         print(f"next_seq_will_be={self.seq + 1}")
         print(f"selected_doors={sorted(self.selected_doors.keys())}")
         print(f"pending_selection={sorted(self.pending_selection.keys())}")
+        print(f"selection_context_key={self._selection_context_key}")
+        print(f"status_gate_approved={self._status_gate_approved}")
         print(f"last_ack={self.last_ack}")
         print(f"last_selection_ack={self.last_selection_ack}")
         print(f"last_control_ack={self.last_control_ack}")

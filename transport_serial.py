@@ -136,6 +136,25 @@ class MockSerialTransport:
         self.connected = False
         print("[MOCK] closed")
 
+    def set_train_status(
+        self,
+        train_state: str,
+        case: Optional[int],
+        position_valid: bool,
+    ) -> None:
+        """테스트 시 ESP32의 다음 status_ack 상태를 설정합니다."""
+        self.train_state = str(train_state).strip().upper()
+        self.case = None if case is None else int(case)
+        self.position_valid = bool(position_valid)
+        if self.train_state == "EMPTY":
+            self.selected_doors.clear()
+            self.doors_status.clear()
+            self.selection_valid = False
+        print(
+            f"[MOCK] next status: train_state={self.train_state}, "
+            f"case={self.case}, position_valid={self.position_valid}"
+        )
+
     def _emit(self, message: dict) -> None:
         if self.on_message:
             self.on_message(message)
@@ -289,6 +308,13 @@ class MockSerialTransport:
                 return
 
             if action == "open":
+                current_states = [
+                    self.doors_status.get(dcu_idx, self._door_status(dcu_idx))["state"]
+                    for dcu_idx in self.selected_doors
+                ]
+                if current_states and all(state in {"Open", "Opening"} for state in current_states):
+                    self._emit_control_ack(seq, command, "OK", 5)
+                    return
                 self.platform_status = "OPENING"
                 for dcu_idx, selection in self.selected_doors.items():
                     self.doors_status[dcu_idx] = self._door_status(
@@ -298,6 +324,13 @@ class MockSerialTransport:
                         dist_step=selection["open_dist_step"],
                     )
             elif action == "close":
+                current_states = [
+                    self.doors_status.get(dcu_idx, self._door_status(dcu_idx))["state"]
+                    for dcu_idx in self.selected_doors
+                ]
+                if current_states and all(state in {"Closed", "Closing"} for state in current_states):
+                    self._emit_control_ack(seq, command, "OK", 5)
+                    return
                 self.platform_status = "CLOSING"
                 for dcu_idx, selection in self.selected_doors.items():
                     self.doors_status[dcu_idx] = self._door_status(
@@ -307,6 +340,13 @@ class MockSerialTransport:
                         dist_step=selection["open_dist_step"],
                     )
             else:
+                current_states = [
+                    self.doors_status.get(dcu_idx, self._door_status(dcu_idx))["state"]
+                    for dcu_idx in self.selected_doors
+                ]
+                if current_states and all(state == "Stopped" for state in current_states):
+                    self._emit_control_ack(seq, command, "OK", 5)
+                    return
                 self.platform_status = "IDLE"
                 for dcu_idx, previous in self.doors_status.items():
                     if dcu_idx in self.selected_doors:

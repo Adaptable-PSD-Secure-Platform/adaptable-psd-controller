@@ -55,6 +55,12 @@ The PC uses four request types:
    `selection_ack` with `result: "OK"`.
 4. Send `door_control` with `action: "open"`.
 
+The controller does not send a status request or `train_context` automatically
+at startup. After the operator sends `status_request` and receives a valid
+`status_ack`, the operator sends `select` to transmit `train_context`. The
+operator's `open` command is a separate request and only applies to the most
+recently approved context.
+
 The ESP32 normally responds with ACK JSON. It can also send
 `emergency_status` immediately when emergency state changes.
 
@@ -183,6 +189,8 @@ seq-reset
 train GTX-A
 case 3
 error 0.00
+mock-status STOPPED 1 true
+select
 open
 close
 stop
@@ -191,5 +199,18 @@ emergency on|off
 quit
 ```
 
-`open` automatically sends `train_context`, waits for a successful
-`selection_ack`, and then sends `door_control/open`.
+After `status active` or `status all` receives a `status_ack` reporting
+`train_state: "STOPPED"`, `position_valid: true`, and a `case`, the operator
+can send `select`. The controller then sends `train_context` and waits for
+`selection_ack: OK`; it does not open the doors at that point. The separate
+`open` command sends `door_control/open` using the most recently approved door
+list. The controller does not issue an automatic status request after a control
+ACK; use `status active` or `status all` when a new status snapshot is needed.
+The ESP32 is responsible for idempotent OPEN/CLOSE ACKs and for reversing a
+door from CLOSING to OPENING when appropriate.
+
+When using the Mock transport, `mock-status <train_state> <case> <position_valid>`
+changes the next `status_ack` response and immediately requests it. For example,
+`mock-status DETECTING 4 false` tests the blocked state and
+`mock-status STOPPED 4 true` tests the valid state. Use `none` for case when the
+ESP32 has not reported a case.
